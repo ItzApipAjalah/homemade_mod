@@ -1,0 +1,27 @@
+{
+	"schemaVersion": 1,
+	"id": "statsmod",
+	"version": "1.0.0",
+	"name": "Stats Mod",
+	"description": "Uploads player statistics to API",
+	"authors": [
+		"Your Name"
+	],
+	"contact": {},
+	"license": "MIT",
+	"environment": "server",
+	"entrypoints": {
+		"main": [
+			"website.amwp.ServerStats"
+		]
+	},
+	"mixins": [
+		"server-stats.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.15.0",
+		"minecraft": "~1.21.1",
+		"java": ">=17",
+		"fabric-api": "*"
+	}
+}
