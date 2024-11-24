@@ -50,7 +50,13 @@ dependencies {
 	implementation 'com.google.code.gson:gson:2.10.1'
 
 	// Change JDA implementation to include
-	include(implementation('net.dv8tion:JDA:5.0.0-beta.20'))
+	include(implementation('net.dv8tion:JDA:5.0.0-beta.18') {
+		exclude module: 'opus-java'        // Remove voice support
+		exclude module: 'commons-collections4'
+		exclude module: 'trove4j'
+		exclude module: 'jackson-databind'
+		exclude module: 'slf4j-api'
+	})
 	
 	// Include required JDA dependencies
 	include(implementation('com.neovisionaries:nv-websocket-client:2.14'))

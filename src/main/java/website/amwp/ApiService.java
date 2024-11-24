@@ -18,9 +18,11 @@ public class ApiService {
     private static final String ONLINE_LEAVE_URL = BASE_URL + "/player-online/leave";
     private static final String ONLINE_LIST_URL = BASE_URL + "/player-online";
     private static final String CHAT_URL = BASE_URL + "/chat";
+    private static final String MODPACK_URL = BASE_URL + "/modpack";
     
     private static final HttpClient client = HttpClient.newHttpClient();
     private static final Gson gson = new Gson();
+    private static final String API_TOKEN = "kizu_mc_stats_9a8b7c6d5e4f3g2h1i";
 
     private static boolean playerExists(String playerName, String playersJson) {
         try {
@@ -42,6 +44,7 @@ public class ApiService {
             // First, get the list of existing players
             HttpRequest getRequest = HttpRequest.newBuilder()
                     .uri(URI.create(PLAYERS_URL))
+                    .header("x-api-token", API_TOKEN)
                     .GET()
                     .build();
 
@@ -69,6 +72,7 @@ public class ApiService {
                         HttpRequest postRequest = HttpRequest.newBuilder()
                                 .uri(URI.create(PLAYERS_URL))
                                 .header("Content-Type", "application/json")
+                                .header("x-api-token", API_TOKEN)
                                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
                                 .build();
 
@@ -114,6 +118,7 @@ public class ApiService {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(ONLINE_JOIN_URL))
                     .header("Content-Type", "application/json")
+                    .header("x-api-token", API_TOKEN)
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
                     .build();
 
@@ -148,6 +153,7 @@ public class ApiService {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(ONLINE_LEAVE_URL))
                     .header("Content-Type", "application/json")
+                    .header("x-api-token", API_TOKEN)
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
                     .build();
 
@@ -178,6 +184,7 @@ public class ApiService {
         try {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(ONLINE_LIST_URL))
+                    .header("x-api-token", API_TOKEN)
                     .GET()
                     .build();
 
@@ -224,6 +231,7 @@ public class ApiService {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(CHAT_URL))
                     .header("Content-Type", "application/json")
+                    .header("x-api-token", API_TOKEN)
                     .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
                     .build();
 
@@ -245,6 +253,43 @@ public class ApiService {
                     });
         } catch (Exception e) {
             ServerStats.LOGGER.error("Failed to create chat message request:", e);
+        }
+    }
+
+    public static void updateModpack(String url) {
+        try {
+            JsonObject requestBody = new JsonObject();
+            requestBody.addProperty("name", "KizuServer Modpack");
+            requestBody.addProperty("version", "1.0.0");
+            requestBody.addProperty("url", url);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(MODPACK_URL))
+                    .header("Content-Type", "application/json")
+                    .header("x-api-token", API_TOKEN)
+                    .PUT(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
+                    .build();
+
+            ServerStats.LOGGER.info("Updating modpack with URL: " + url);
+
+            client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                    .thenAccept(response -> {
+                        if (response.statusCode() == 200 || response.statusCode() == 201) {
+                            ServerStats.LOGGER.info("✓ Successfully updated modpack:");
+                            ServerStats.LOGGER.info("  - URL: " + url);
+                            ServerStats.LOGGER.info("  - Response: " + response.body());
+                        } else {
+                            ServerStats.LOGGER.error("✗ Failed to update modpack:");
+                            ServerStats.LOGGER.error("  - Status: " + response.statusCode());
+                            ServerStats.LOGGER.error("  - Response: " + response.body());
+                        }
+                    })
+                    .exceptionally(e -> {
+                        ServerStats.LOGGER.error("✗ Error updating modpack:", e);
+                        return null;
+                    });
+        } catch (Exception e) {
+            ServerStats.LOGGER.error("✗ Failed to create modpack update request:", e);
         }
     }
 } 
