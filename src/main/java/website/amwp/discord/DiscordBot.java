@@ -39,6 +39,9 @@ import java.util.ArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.UUID;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
+import net.dv8tion.jda.api.Permission;
+import java.util.Arrays;
+import net.minecraft.server.command.ServerCommandSource;
 
 public class DiscordBot extends ListenerAdapter {
     private static JDA jda;
@@ -53,7 +56,15 @@ public class DiscordBot extends ListenerAdapter {
     private static final int PLAYERS_PER_PAGE = 10;
     private static final ConcurrentHashMap<String, PlayerListData> playerListCache = new ConcurrentHashMap<>();
     private static final ScheduledExecutorService topicUpdater = Executors.newSingleThreadScheduledExecutor();
+    private static StringBuilder backupMessageBuffer = new StringBuilder();
+    private static boolean isBackupInProgress = false;
     
+    // Add these constants for authorized users
+    private static final List<String> AUTHORIZED_USERS = Arrays.asList(
+        "481734993622728715",
+        "403425777833738240"
+    );
+
     private static class PlayerListData {
         final List<ServerPlayerEntity> players;
         final int maxPlayers;
@@ -112,7 +123,8 @@ public class DiscordBot extends ListenerAdapter {
                 Commands.slash("help", "Show all available commands"),
                 Commands.slash("serverinfo", "Show server information"),
                 Commands.slash("recipe", "Show item crafting recipe")
-                    .addOption(OptionType.STRING, "item", "Item name (e.g. diamond_sword)", true)
+                    .addOption(OptionType.STRING, "item", "Item name (e.g. diamond_sword)", true),
+                Commands.slash("backup", "Start a server backup")
             ).queue();
             
             updateBotStatus();
@@ -333,7 +345,16 @@ public class DiscordBot extends ListenerAdapter {
             for (String channelId : channelIds) {
                 TextChannel channel = jda.getTextChannelById(channelId);
                 if (channel != null && channel.canTalk()) {
-                    channel.getManager().setTopic("🔴 Server Offline | 🌐 play.kizuserver.xyz").queue();
+                    try {
+                        if (channel.getGuild().getSelfMember().hasPermission(net.dv8tion.jda.api.Permission.MANAGE_CHANNEL)) {
+                            channel.getManager().setTopic("🔴 Server Offline | 🌐 play.kizuserver.xyz").queue(
+                                success -> {}, // Silent success
+                                error -> {} // Silent error
+                            );
+                        }
+                    } catch (Exception e) {
+                        // Silently ignore permission errors
+                    }
                 }
             }
 
@@ -342,7 +363,7 @@ public class DiscordBot extends ListenerAdapter {
             try {
                 scheduler.awaitTermination(5, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
-                ServerStats.LOGGER.error("Error shutting down status updater: " + e.getMessage());
+                ServerStats.LOGGER.error("Error shutting down scheduler: " + e.getMessage());
             }
             jda.shutdown();
             isInitialized = false;
@@ -463,6 +484,9 @@ public class DiscordBot extends ListenerAdapter {
                 break;
             case "recipe":
                 handleRecipe(event);
+                break;
+            case "backup":
+                handleBackup(event);
                 break;
         }
     }
@@ -797,10 +821,16 @@ public class DiscordBot extends ListenerAdapter {
                 for (String channelId : channelIds) {
                     TextChannel channel = jda.getTextChannelById(channelId);
                     if (channel != null && channel.canTalk()) {
-                        channel.getManager().setTopic(status).queue(
-                            success -> ServerStats.LOGGER.debug("Updated channel topic"),
-                            error -> ServerStats.LOGGER.error("Failed to update channel topic: " + error.getMessage())
-                        );
+                        try {
+                            if (channel.getGuild().getSelfMember().hasPermission(net.dv8tion.jda.api.Permission.MANAGE_CHANNEL)) {
+                                channel.getManager().setTopic(status).queue(
+                                    success -> {}, // Silent success
+                                    error -> {} // Silent error
+                                );
+                            }
+                        } catch (Exception e) {
+                            // Silently ignore permission errors
+                        }
                     }
                 }
             }
@@ -816,5 +846,86 @@ public class DiscordBot extends ListenerAdapter {
         
         return String.format("🟢 Server Online | 👥 %d/%d Players | ⏰ Uptime: %s | 💾 Memory: %d/%d MB | 🌐 play.kizuserver.xyz",
             playerCount, maxPlayers, getPlaytime(), usedMemory, maxMemory);
+    }
+
+    public static void handleBackupMessage(String message) {
+        if (message.contains("Starting backup process")) {
+            isBackupInProgress = true;
+            backupMessageBuffer = new StringBuilder();
+            sendBackupStartMessage();
+        }
+        
+        if (isBackupInProgress) {
+            backupMessageBuffer.append(message.replace("[Backup] ", "")).append("\n");
+            
+            if (message.contains("Backup completed successfully")) {
+                isBackupInProgress = false;
+                sendBackupCompleteMessage();
+            }
+        }
+    }
+
+    private static void sendBackupStartMessage() {
+        broadcastToChannels(channel -> {
+            EmbedBuilder embed = new EmbedBuilder()
+                .setColor(new Color(255, 165, 0)) // Orange color
+                .setTitle("🔄 Backup Started")
+                .setDescription("Server backup process has started. You might experience slight lag.")
+                .setTimestamp(Instant.now())
+                .setFooter("Backup System", null);
+
+            channel.sendMessageEmbeds(embed.build()).queue();
+        });
+    }
+
+    private static void sendBackupCompleteMessage() {
+        broadcastToChannels(channel -> {
+            String details = backupMessageBuffer.toString()
+                .replaceAll("(?m)^Creating zip file.*$", "") // Remove zip creation messages
+                .replaceAll("(?m)^Uploading.*$", "")        // Remove upload progress messages
+                .trim();
+
+            EmbedBuilder embed = new EmbedBuilder()
+                .setColor(new Color(0, 255, 0)) // Green color
+                .setTitle("✅ Backup Completed")
+                .setDescription("Server backup has completed successfully!")
+                .addField("Backup Details", "```" + details + "```", false)
+                .setTimestamp(Instant.now())
+                .setFooter("Backup System", null);
+
+            channel.sendMessageEmbeds(embed.build()).queue();
+        });
+    }
+
+    private void handleBackup(SlashCommandInteractionEvent event) {
+        // Check if user is authorized
+        if (!AUTHORIZED_USERS.contains(event.getUser().getId())) {
+            event.reply("❌ You are not authorized to use this command!")
+                .setEphemeral(true)
+                .queue();
+            return;
+        }
+
+        if (server == null) {
+            event.reply("Server is not running!").setEphemeral(true).queue();
+            return;
+        }
+
+        // Acknowledge the command immediately
+        event.deferReply().queue();
+
+        try {
+            // Execute backup command using the server's command dispatcher
+            server.getCommandManager().executeWithPrefix(
+                server.getCommandSource(),
+                "drivebackup backup"
+            );
+
+            // Send initial response
+            event.getHook().editOriginal("✅ Backup command executed. Check status in backup messages.").queue();
+        } catch (Exception e) {
+            event.getHook().editOriginal("❌ Failed to execute backup command: " + e.getMessage()).queue();
+            ServerStats.LOGGER.error("Failed to execute backup command", e);
+        }
     }
 }

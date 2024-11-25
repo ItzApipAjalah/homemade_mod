@@ -6,7 +6,8 @@
 	"mixins": [
 		"ChatMixin",
 		"PlayerEventMixin",
-		"AdvancementMixin"
+		"AdvancementMixin",
+		"BackupLogMixin"
 	],
 	"client": [
 	],
