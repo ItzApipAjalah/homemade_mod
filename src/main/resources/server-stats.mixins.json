@@ -7,7 +7,8 @@
 		"ChatMixin",
 		"PlayerEventMixin",
 		"AdvancementMixin",
-		"BackupLogMixin"
+		"BackupLogMixin",
+		"ServerShutdownMixin"
 	],
 	"client": [
 	],

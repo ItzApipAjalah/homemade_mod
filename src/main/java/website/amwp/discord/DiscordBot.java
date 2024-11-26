@@ -124,7 +124,9 @@ public class DiscordBot extends ListenerAdapter {
                 Commands.slash("serverinfo", "Show server information"),
                 Commands.slash("recipe", "Show item crafting recipe")
                     .addOption(OptionType.STRING, "item", "Item name (e.g. diamond_sword)", true),
-                Commands.slash("backup", "Start a server backup")
+                Commands.slash("backup", "Start a server backup"),
+                Commands.slash("delete", "Delete bot messages")
+                    .addOption(OptionType.INTEGER, "amount", "Number of messages to delete", true)
             ).queue();
             
             updateBotStatus();
@@ -140,14 +142,25 @@ public class DiscordBot extends ListenerAdapter {
         if (!isInitialized || jda == null)
             return;
 
-        for (String channelId : channelIds) {
+        // Get fresh list of channel IDs from config
+        List<String> currentChannelIds = ModConfig.getInstance().getDiscordChannelIds();
+
+        for (String channelId : currentChannelIds) {
             try {
                 TextChannel channel = jda.getTextChannelById(channelId);
-                if (channel != null) {
-                    messageAction.accept(channel);
+                if (channel != null && channel.canTalk()) {
+                    try {
+                        // Create a MessageRequest object to set silent flag
+                        channel.sendTyping().queue(); // Optional: shows typing indicator
+                        messageAction.accept(channel);
+                    } catch (Exception e) {
+                        ServerStats.LOGGER.error("Failed to send message to channel " + channelId + ": " + e.getMessage());
+                    }
+                } else {
+                    ServerStats.LOGGER.warn("Could not find channel or cannot talk in channel: " + channelId);
                 }
             } catch (Exception e) {
-                ServerStats.LOGGER.error("Error sending message to channel " + channelId + ": " + e.getMessage());
+                ServerStats.LOGGER.error("Error accessing channel " + channelId + ": " + e.getMessage());
             }
         }
     }
@@ -171,25 +184,32 @@ public class DiscordBot extends ListenerAdapter {
         if (!isInitialized || jda == null)
             return;
 
-        try {
-            TextChannel channel = jda.getTextChannelById(channelIds.get(0));
-            if (channel != null) {
-                EmbedBuilder embed = new EmbedBuilder()
-                        .setColor(Color.RED)
-                        .setTitle("Server is shutting down!")
-                        .setTimestamp(Instant.now())
-                        .setFooter("Server Stop", null);
+        broadcastToChannels(channel -> {
+            EmbedBuilder embed = new EmbedBuilder()
+                    .setColor(Color.RED)
+                    .setTitle("Server is shutting down!")
+                    .setTimestamp(Instant.now())
+                    .setFooter("Server Stop", null);
 
-                channel.sendMessageEmbeds(embed.build()).queue(
-                        success -> {
-                            ServerStats.LOGGER.info("Sent server stop message to Discord");
-                            shutdown();
-                        },
-                        error -> ServerStats.LOGGER.error("Failed to send server stop message: " + error.getMessage()));
-            }
-        } catch (Exception e) {
-            ServerStats.LOGGER.error("Error sending server stop message: " + e.getMessage());
+            channel.sendMessageEmbeds(embed.build())
+                .setSuppressedNotifications(true)  // Make it silent
+                .queue(
+                    success -> {
+                        ServerStats.LOGGER.info("Sent server stop message to Discord");
+                    },
+                    error -> ServerStats.LOGGER.error("Failed to send server stop message: " + error.getMessage())
+                );
+        });
+
+        // Wait a bit for messages to be sent before shutting down
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            ServerStats.LOGGER.error("Sleep interrupted during shutdown: " + e.getMessage());
         }
+
+        // Now perform shutdown
+        shutdown();
     }
 
     @Override
@@ -242,64 +262,57 @@ public class DiscordBot extends ListenerAdapter {
 
     public static void sendChatMessage(String playerName, String message) {
         broadcastToChannels(channel -> {
-            channel.sendMessage("**" + playerName + "**: " + message).queue(
+            channel.sendMessage("**" + playerName + "**: " + message)
+                .setSuppressedNotifications(true)  // This makes the message silent
+                .queue(
                     success -> ServerStats.LOGGER.info("MC -> Discord: " + playerName + ": " + message),
-                    error -> ServerStats.LOGGER.error("Failed to send chat message to Discord: " + error.getMessage()));
+                    error -> ServerStats.LOGGER.error("Failed to send chat message to Discord: " + error.getMessage())
+                );
         });
     }
 
     public static void sendPlayerJoinMessage(String playerName) {
-        if (!isInitialized || jda == null)
-            return;
+        if (!isInitialized || jda == null) return;
 
-        try {
-            TextChannel channel = jda.getTextChannelById(channelIds.get(0));
-            if (channel != null) {
-                EmbedBuilder embed = new EmbedBuilder()
-                        .setColor(Color.GREEN)
-                        .setTitle(playerName + " joined the server")
-                        .setThumbnail(SKIN_API_URL + playerName)
-                        .setTimestamp(Instant.now())
-                        .setFooter("Player Join", null);
+        broadcastToChannels(channel -> {
+            EmbedBuilder embed = new EmbedBuilder()
+                    .setColor(Color.GREEN)
+                    .setTitle(playerName + " joined the server")
+                    .setThumbnail(SKIN_API_URL + playerName)
+                    .setTimestamp(Instant.now())
+                    .setFooter("Player Join", null);
 
-                channel.sendMessageEmbeds(embed.build()).queue(
-                        success -> ServerStats.LOGGER.info("Sent join message to Discord for " + playerName),
-                        error -> {
-                            ServerStats.LOGGER.error("Failed to send join message to Discord: " + error.getMessage());
-                            // Try again with Steve skin if custom skin fails
-                            retryWithSteveSkin(channel, playerName, true);
-                        });
-            }
-        } catch (Exception e) {
-            ServerStats.LOGGER.error("Error sending join message to Discord: " + e.getMessage());
-        }
+            channel.sendMessageEmbeds(embed.build())
+                .setSuppressedNotifications(true)  // Make it silent
+                .queue(
+                    success -> ServerStats.LOGGER.info("Sent join message to Discord for " + playerName),
+                    error -> {
+                        ServerStats.LOGGER.error("Failed to send join message to Discord: " + error.getMessage());
+                        retryWithSteveSkin(channel, playerName, true);
+                    });
+        });
     }
 
     public static void sendPlayerLeaveMessage(String playerName) {
         if (!isInitialized || jda == null)
             return;
 
-        try {
-            TextChannel channel = jda.getTextChannelById(channelIds.get(0));
-            if (channel != null) {
-                EmbedBuilder embed = new EmbedBuilder()
-                        .setColor(Color.RED)
-                        .setTitle(playerName + " left the server")
-                        .setThumbnail(SKIN_API_URL + playerName)
-                        .setTimestamp(Instant.now())
-                        .setFooter("Player Leave", null);
+        broadcastToChannels(channel -> {
+            EmbedBuilder embed = new EmbedBuilder()
+                    .setColor(Color.RED)
+                    .setTitle(playerName + " left the server")
+                    .setThumbnail(SKIN_API_URL + playerName)
+                    .setTimestamp(Instant.now())
+                    .setFooter("Player Leave", null);
 
-                channel.sendMessageEmbeds(embed.build()).queue(
-                        success -> ServerStats.LOGGER.info("Sent leave message to Discord for " + playerName),
-                        error -> {
-                            ServerStats.LOGGER.error("Failed to send leave message to Discord: " + error.getMessage());
-                            // Try again with Steve skin if custom skin fails
-                            retryWithSteveSkin(channel, playerName, false);
-                        });
-            }
-        } catch (Exception e) {
-            ServerStats.LOGGER.error("Error sending leave message to Discord: " + e.getMessage());
-        }
+            channel.sendMessageEmbeds(embed.build()).queue(
+                    success -> ServerStats.LOGGER.info("Sent leave message to Discord for " + playerName),
+                    error -> {
+                        ServerStats.LOGGER.error("Failed to send leave message to Discord: " + error.getMessage());
+                        // Try again with Steve skin if custom skin fails
+                        retryWithSteveSkin(channel, playerName, false);
+                    });
+        });
     }
 
     private static void retryWithSteveSkin(TextChannel channel, String playerName, boolean isJoin) {
@@ -374,28 +387,22 @@ public class DiscordBot extends ListenerAdapter {
         if (!isInitialized || jda == null)
             return;
 
-        try {
-            TextChannel channel = jda.getTextChannelById(channelIds.get(0));
-            if (channel != null) {
-                EmbedBuilder embed = new EmbedBuilder()
-                        .setColor(new Color(139, 0, 0)) // Dark red
-                        .setTitle("Player Death")
-                        .setDescription(deathMessage.getString().replaceAll("§[0-9a-fk-or]", "")) // Remove Minecraft
-                                                                                                  // color codes
-                        .setThumbnail(SKIN_API_URL + playerName)
-                        .setTimestamp(Instant.now())
-                        .setFooter("Death Event", null);
+        broadcastToChannels(channel -> {
+            EmbedBuilder embed = new EmbedBuilder()
+                    .setColor(new Color(139, 0, 0)) // Dark red
+                    .setTitle("Player Death")
+                    .setDescription(deathMessage.getString().replaceAll("§[0-9a-fk-or]", ""))
+                    .setThumbnail(SKIN_API_URL + playerName)
+                    .setTimestamp(Instant.now())
+                    .setFooter("Death Event", null);
 
-                channel.sendMessageEmbeds(embed.build()).queue(
-                        success -> ServerStats.LOGGER.info("Sent death message to Discord for " + playerName),
-                        error -> {
-                            ServerStats.LOGGER.error("Failed to send death message to Discord: " + error.getMessage());
-                            retryWithSteveSkinDeath(channel, playerName, embed.getDescriptionBuilder().toString());
-                        });
-            }
-        } catch (Exception e) {
-            ServerStats.LOGGER.error("Error sending death message to Discord: " + e.getMessage());
-        }
+            channel.sendMessageEmbeds(embed.build()).queue(
+                    success -> ServerStats.LOGGER.info("Sent death message to Discord for " + playerName),
+                    error -> {
+                        ServerStats.LOGGER.error("Failed to send death message to Discord: " + error.getMessage());
+                        retryWithSteveSkinDeath(channel, playerName, embed.getDescriptionBuilder().toString());
+                    });
+        });
     }
 
     private static void retryWithSteveSkinAchievement(TextChannel channel, String playerName, String description) {
@@ -416,27 +423,22 @@ public class DiscordBot extends ListenerAdapter {
         if (!isInitialized || jda == null)
             return;
 
-        try {
-            TextChannel channel = jda.getTextChannelById(channelIds.get(0));
-            if (channel != null) {
-                EmbedBuilder embed = new EmbedBuilder()
-                        .setColor(new Color(255, 215, 0)) // Gold color
-                        .setTitle("Achievement Unlocked!")
-                        .setDescription(achievementMessage.getString().replaceAll("§[0-9a-fk-or]", ""))
-                        .setThumbnail(SKIN_API_URL + playerName)
-                        .setTimestamp(Instant.now())
-                        .setFooter("Achievement Event", null);
+        broadcastToChannels(channel -> {
+            EmbedBuilder embed = new EmbedBuilder()
+                    .setColor(new Color(255, 215, 0)) // Gold color
+                    .setTitle("Achievement Unlocked!")
+                    .setDescription(achievementMessage.getString().replaceAll("§[0-9a-fk-or]", ""))
+                    .setThumbnail(SKIN_API_URL + playerName)
+                    .setTimestamp(Instant.now())
+                    .setFooter("Achievement Event", null);
 
-                channel.sendMessageEmbeds(embed.build()).queue(
-                        success -> ServerStats.LOGGER.info("Sent achievement message to Discord for " + playerName),
-                        error -> {
-                            ServerStats.LOGGER.error("Failed to send achievement message to Discord: " + error.getMessage());
-                            retryWithSteveSkinAchievement(channel, playerName, embed.getDescriptionBuilder().toString());
-                        });
-            }
-        } catch (Exception e) {
-            ServerStats.LOGGER.error("Error sending achievement message to Discord: " + e.getMessage());
-        }
+            channel.sendMessageEmbeds(embed.build()).queue(
+                    success -> ServerStats.LOGGER.info("Sent achievement message to Discord for " + playerName),
+                    error -> {
+                        ServerStats.LOGGER.error("Failed to send achievement message to Discord: " + error.getMessage());
+                        retryWithSteveSkinAchievement(channel, playerName, embed.getDescriptionBuilder().toString());
+                    });
+        });
     }
 
     private static void updateBotStatus() {
@@ -487,6 +489,9 @@ public class DiscordBot extends ListenerAdapter {
                 break;
             case "backup":
                 handleBackup(event);
+                break;
+            case "delete":
+                handleDelete(event);
                 break;
         }
     }
@@ -927,5 +932,58 @@ public class DiscordBot extends ListenerAdapter {
             event.getHook().editOriginal("❌ Failed to execute backup command: " + e.getMessage()).queue();
             ServerStats.LOGGER.error("Failed to execute backup command", e);
         }
+    }
+
+    private void handleDelete(SlashCommandInteractionEvent event) {
+        // Check if user is authorized
+        if (!AUTHORIZED_USERS.contains(event.getUser().getId())) {
+            event.reply("❌ You are not authorized to use this command!")
+                .setEphemeral(true)
+                .queue();
+            return;
+        }
+
+        // Get amount parameter
+        int amount = event.getOption("amount").getAsInt();
+        if (amount < 1 || amount > 100) {
+            event.reply("❌ Please specify a number between 1 and 100")
+                .setEphemeral(true)
+                .queue();
+            return;
+        }
+
+        // Acknowledge the command immediately
+        event.deferReply().setEphemeral(true).queue();
+
+        // Get channel and bot ID
+        TextChannel channel = event.getChannel().asTextChannel();
+        String botId = event.getJDA().getSelfUser().getId();
+
+        // Fetch messages
+        channel.getHistory().retrievePast(100).queue(messages -> {
+            // Filter bot messages and limit to requested amount
+            List<Message> botMessages = messages.stream()
+                .filter(msg -> msg.getAuthor().getId().equals(botId))
+                .limit(amount)
+                .collect(Collectors.toList());
+
+            if (botMessages.isEmpty()) {
+                event.getHook().editOriginal("❌ No bot messages found to delete.").queue();
+                return;
+            }
+
+            // Delete messages
+            if (botMessages.size() == 1) {
+                botMessages.get(0).delete().queue(
+                    success -> event.getHook().editOriginal("✅ Deleted 1 message").queue(),
+                    error -> event.getHook().editOriginal("❌ Failed to delete message: " + error.getMessage()).queue()
+                );
+            } else {
+                channel.deleteMessages(botMessages).queue(
+                    success -> event.getHook().editOriginal("✅ Deleted " + botMessages.size() + " messages").queue(),
+                    error -> event.getHook().editOriginal("❌ Failed to delete messages: " + error.getMessage()).queue()
+                );
+            }
+        });
     }
 }
