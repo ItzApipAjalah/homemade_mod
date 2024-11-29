@@ -8,7 +8,9 @@
 		"PlayerEventMixin",
 		"AdvancementMixin",
 		"BackupLogMixin",
-		"ServerShutdownMixin"
+		"ServerShutdownMixin",
+		"NettyLoggerMixin"
+
 	],
 	"client": [
 	],

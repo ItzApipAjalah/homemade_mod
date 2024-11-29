@@ -42,6 +42,9 @@ import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.Permission;
 import java.util.Arrays;
 import net.minecraft.server.command.ServerCommandSource;
+import net.dv8tion.jda.api.exceptions.RateLimitedException;
+import website.amwp.discord.games.TicTacToe;
+import net.dv8tion.jda.api.interactions.components.ActionRow;
 
 public class DiscordBot extends ListenerAdapter {
     private static JDA jda;
@@ -64,6 +67,8 @@ public class DiscordBot extends ListenerAdapter {
         "481734993622728715",
         "403425777833738240"
     );
+
+    private static final ConcurrentHashMap<String, TicTacToe> activeGames = new ConcurrentHashMap<>();
 
     private static class PlayerListData {
         final List<ServerPlayerEntity> players;
@@ -126,7 +131,9 @@ public class DiscordBot extends ListenerAdapter {
                     .addOption(OptionType.STRING, "item", "Item name (e.g. diamond_sword)", true),
                 Commands.slash("backup", "Start a server backup"),
                 Commands.slash("delete", "Delete bot messages")
-                    .addOption(OptionType.INTEGER, "amount", "Number of messages to delete", true)
+                    .addOption(OptionType.INTEGER, "amount", "Number of messages to delete", true),
+                Commands.slash("tictactoe", "Play Tic Tac Toe")
+                    .addOption(OptionType.STRING, "difficulty", "Choose difficulty (easy/medium/hard)", true)
             ).queue();
             
             updateBotStatus();
@@ -142,7 +149,6 @@ public class DiscordBot extends ListenerAdapter {
         if (!isInitialized || jda == null)
             return;
 
-        // Get fresh list of channel IDs from config
         List<String> currentChannelIds = ModConfig.getInstance().getDiscordChannelIds();
 
         for (String channelId : currentChannelIds) {
@@ -150,14 +156,10 @@ public class DiscordBot extends ListenerAdapter {
                 TextChannel channel = jda.getTextChannelById(channelId);
                 if (channel != null && channel.canTalk()) {
                     try {
-                        // Create a MessageRequest object to set silent flag
-                        channel.sendTyping().queue(); // Optional: shows typing indicator
                         messageAction.accept(channel);
                     } catch (Exception e) {
                         ServerStats.LOGGER.error("Failed to send message to channel " + channelId + ": " + e.getMessage());
                     }
-                } else {
-                    ServerStats.LOGGER.warn("Could not find channel or cannot talk in channel: " + channelId);
                 }
             } catch (Exception e) {
                 ServerStats.LOGGER.error("Error accessing channel " + channelId + ": " + e.getMessage());
@@ -174,16 +176,13 @@ public class DiscordBot extends ListenerAdapter {
                     .setTimestamp(Instant.now())
                     .setFooter("Server Start", null);
 
-            channel.sendMessageEmbeds(embed.build()).queue(
-                    success -> ServerStats.LOGGER.info("Sent server start message to Discord channel: " + channel.getId()),
-                    error -> ServerStats.LOGGER.error("Failed to send server start message: " + error.getMessage()));
+            channel.sendMessageEmbeds(embed.build())
+                    .setSuppressedNotifications(true)
+                    .queue();
         });
     }
 
     public static void sendServerStopMessage() {
-        if (!isInitialized || jda == null)
-            return;
-
         broadcastToChannels(channel -> {
             EmbedBuilder embed = new EmbedBuilder()
                     .setColor(Color.RED)
@@ -192,24 +191,9 @@ public class DiscordBot extends ListenerAdapter {
                     .setFooter("Server Stop", null);
 
             channel.sendMessageEmbeds(embed.build())
-                .setSuppressedNotifications(true)  // Make it silent
-                .queue(
-                    success -> {
-                        ServerStats.LOGGER.info("Sent server stop message to Discord");
-                    },
-                    error -> ServerStats.LOGGER.error("Failed to send server stop message: " + error.getMessage())
-                );
+                    .setSuppressedNotifications(true)
+                    .queue();
         });
-
-        // Wait a bit for messages to be sent before shutting down
-        try {
-            Thread.sleep(1000);
-        } catch (InterruptedException e) {
-            ServerStats.LOGGER.error("Sleep interrupted during shutdown: " + e.getMessage());
-        }
-
-        // Now perform shutdown
-        shutdown();
     }
 
     @Override
@@ -263,17 +247,12 @@ public class DiscordBot extends ListenerAdapter {
     public static void sendChatMessage(String playerName, String message) {
         broadcastToChannels(channel -> {
             channel.sendMessage("**" + playerName + "**: " + message)
-                .setSuppressedNotifications(true)  // This makes the message silent
-                .queue(
-                    success -> ServerStats.LOGGER.info("MC -> Discord: " + playerName + ": " + message),
-                    error -> ServerStats.LOGGER.error("Failed to send chat message to Discord: " + error.getMessage())
-                );
+                    .setSuppressedNotifications(true)
+                    .queue();
         });
     }
 
     public static void sendPlayerJoinMessage(String playerName) {
-        if (!isInitialized || jda == null) return;
-
         broadcastToChannels(channel -> {
             EmbedBuilder embed = new EmbedBuilder()
                     .setColor(Color.GREEN)
@@ -283,20 +262,12 @@ public class DiscordBot extends ListenerAdapter {
                     .setFooter("Player Join", null);
 
             channel.sendMessageEmbeds(embed.build())
-                .setSuppressedNotifications(true)  // Make it silent
-                .queue(
-                    success -> ServerStats.LOGGER.info("Sent join message to Discord for " + playerName),
-                    error -> {
-                        ServerStats.LOGGER.error("Failed to send join message to Discord: " + error.getMessage());
-                        retryWithSteveSkin(channel, playerName, true);
-                    });
+                    .setSuppressedNotifications(true)
+                    .queue();
         });
     }
 
     public static void sendPlayerLeaveMessage(String playerName) {
-        if (!isInitialized || jda == null)
-            return;
-
         broadcastToChannels(channel -> {
             EmbedBuilder embed = new EmbedBuilder()
                     .setColor(Color.RED)
@@ -305,13 +276,9 @@ public class DiscordBot extends ListenerAdapter {
                     .setTimestamp(Instant.now())
                     .setFooter("Player Leave", null);
 
-            channel.sendMessageEmbeds(embed.build()).queue(
-                    success -> ServerStats.LOGGER.info("Sent leave message to Discord for " + playerName),
-                    error -> {
-                        ServerStats.LOGGER.error("Failed to send leave message to Discord: " + error.getMessage());
-                        // Try again with Steve skin if custom skin fails
-                        retryWithSteveSkin(channel, playerName, false);
-                    });
+            channel.sendMessageEmbeds(embed.build())
+                    .setSuppressedNotifications(true)
+                    .queue();
         });
     }
 
@@ -384,30 +351,24 @@ public class DiscordBot extends ListenerAdapter {
     }
 
     public static void sendPlayerDeathMessage(String playerName, Text deathMessage) {
-        if (!isInitialized || jda == null)
-            return;
-
         broadcastToChannels(channel -> {
             EmbedBuilder embed = new EmbedBuilder()
-                    .setColor(new Color(139, 0, 0)) // Dark red
+                    .setColor(new Color(139, 0, 0))
                     .setTitle("Player Death")
                     .setDescription(deathMessage.getString().replaceAll("§[0-9a-fk-or]", ""))
                     .setThumbnail(SKIN_API_URL + playerName)
                     .setTimestamp(Instant.now())
                     .setFooter("Death Event", null);
 
-            channel.sendMessageEmbeds(embed.build()).queue(
-                    success -> ServerStats.LOGGER.info("Sent death message to Discord for " + playerName),
-                    error -> {
-                        ServerStats.LOGGER.error("Failed to send death message to Discord: " + error.getMessage());
-                        retryWithSteveSkinDeath(channel, playerName, embed.getDescriptionBuilder().toString());
-                    });
+            channel.sendMessageEmbeds(embed.build())
+                    .setSuppressedNotifications(true)
+                    .queue();
         });
     }
 
     private static void retryWithSteveSkinAchievement(TextChannel channel, String playerName, String description) {
         EmbedBuilder embed = new EmbedBuilder()
-                .setColor(new Color(255, 215, 0)) // Gold color
+                .setColor(new Color(255, 215, 0))
                 .setTitle("Achievement Unlocked!")
                 .setDescription(description)
                 .setThumbnail(STEVE_SKIN_URL)
@@ -420,24 +381,18 @@ public class DiscordBot extends ListenerAdapter {
     }
 
     public static void sendAchievementMessage(String playerName, Text achievementMessage) {
-        if (!isInitialized || jda == null)
-            return;
-
         broadcastToChannels(channel -> {
             EmbedBuilder embed = new EmbedBuilder()
-                    .setColor(new Color(255, 215, 0)) // Gold color
+                    .setColor(new Color(255, 215, 0))
                     .setTitle("Achievement Unlocked!")
                     .setDescription(achievementMessage.getString().replaceAll("§[0-9a-fk-or]", ""))
                     .setThumbnail(SKIN_API_URL + playerName)
                     .setTimestamp(Instant.now())
                     .setFooter("Achievement Event", null);
 
-            channel.sendMessageEmbeds(embed.build()).queue(
-                    success -> ServerStats.LOGGER.info("Sent achievement message to Discord for " + playerName),
-                    error -> {
-                        ServerStats.LOGGER.error("Failed to send achievement message to Discord: " + error.getMessage());
-                        retryWithSteveSkinAchievement(channel, playerName, embed.getDescriptionBuilder().toString());
-                    });
+            channel.sendMessageEmbeds(embed.build())
+                    .setSuppressedNotifications(true)
+                    .queue();
         });
     }
 
@@ -492,6 +447,9 @@ public class DiscordBot extends ListenerAdapter {
                 break;
             case "delete":
                 handleDelete(event);
+                break;
+            case "tictactoe":
+                handleTicTacToe(event);
                 break;
         }
     }
@@ -745,40 +703,37 @@ public class DiscordBot extends ListenerAdapter {
 
     @Override
     public void onButtonInteraction(ButtonInteractionEvent event) {
-        String[] parts = event.getComponentId().split(":");
-        if (parts.length != 3 || !parts[0].equals("playerlist")) return;
+        String[] id = event.getComponentId().split(",");
+        if (id.length == 2) {
+            try {
+                int row = Integer.parseInt(id[0]);
+                int col = Integer.parseInt(id[1]);
+                
+                TicTacToe game = activeGames.get(event.getUser().getId());
+                if (game != null) {
+                    EmbedBuilder response = game.makeMove(row, col, event.getUser());
+                    
+                    // Create action rows for buttons
+                    List<Button> buttons = game.getButtons();
+                    List<ActionRow> actionRows = Arrays.asList(
+                        ActionRow.of(buttons.subList(0, 3)),
+                        ActionRow.of(buttons.subList(3, 6)),
+                        ActionRow.of(buttons.subList(6, 9))
+                    );
+                    
+                    event.editMessageEmbeds(response.build())
+                        .setComponents(actionRows)
+                        .queue();
 
-        String listId = parts[1];
-        String action = parts[2];
-        PlayerListData data = playerListCache.get(listId);
-
-        if (data == null || data.isExpired()) {
-            event.reply("Player list expired. Please use /playerlist again.").setEphemeral(true).queue();
-            return;
+                    // Remove finished games
+                    if (response.build().getFooter().getText().contains("Game Over")) {
+                        activeGames.remove(event.getUser().getId());
+                    }
+                }
+            } catch (NumberFormatException e) {
+                // Ignore invalid button IDs
+            }
         }
-
-        int currentPage = Integer.parseInt(event.getMessage().getEmbeds().get(0).getFooter().getText().split(" ")[1]) - 1;
-        int newPage = currentPage;
-
-        switch (action) {
-            case "prev":
-                newPage = Math.max(0, currentPage - 1);
-                break;
-            case "next":
-                newPage = currentPage + 1;
-                break;
-            case "refresh":
-                // Update the player list data
-                data = new PlayerListData(
-                    new ArrayList<>(server.getPlayerManager().getPlayerList()),
-                    server.getMaxPlayerCount()
-                );
-                playerListCache.put(listId, data);
-                break;
-        }
-
-        event.deferEdit().queue();
-        handlePlayerListUpdate(event, listId, newPage);
     }
 
     private void handleRecipe(SlashCommandInteractionEvent event) {
@@ -817,9 +772,27 @@ public class DiscordBot extends ListenerAdapter {
         );
     }
 
+    private static final long TOPIC_UPDATE_INTERVAL = 5 * 60 * 1000; // 5 minutes
+    private static long lastTopicUpdate = 0;
+    private static boolean isRateLimited = false;
+    private static long rateLimitResetTime = 0;
+
     private static void startTopicUpdates() {
         topicUpdater.scheduleAtFixedRate(() -> {
             if (server != null && jda != null) {
+                long currentTime = System.currentTimeMillis();
+                
+                // Check if we're rate limited
+                if (isRateLimited && currentTime < rateLimitResetTime) {
+                    return;
+                }
+                
+                // Check if enough time has passed since last update
+                if (currentTime - lastTopicUpdate < TOPIC_UPDATE_INTERVAL) {
+                    return;
+                }
+
+                isRateLimited = false;
                 String status = formatServerStatus();
                 
                 // Update topic for all configured channels
@@ -827,11 +800,20 @@ public class DiscordBot extends ListenerAdapter {
                     TextChannel channel = jda.getTextChannelById(channelId);
                     if (channel != null && channel.canTalk()) {
                         try {
-                            if (channel.getGuild().getSelfMember().hasPermission(net.dv8tion.jda.api.Permission.MANAGE_CHANNEL)) {
-                                channel.getManager().setTopic(status).queue(
-                                    success -> {}, // Silent success
-                                    error -> {} // Silent error
-                                );
+                            if (channel.getGuild().getSelfMember().hasPermission(Permission.MANAGE_CHANNEL)) {
+                                channel.getManager().setTopic(status)
+                                    .queue(
+                                        success -> {
+                                            lastTopicUpdate = currentTime;
+                                        },
+                                        error -> {
+                                            if (error instanceof RateLimitedException) {
+                                                RateLimitedException rle = (RateLimitedException) error;
+                                                isRateLimited = true;
+                                                rateLimitResetTime = currentTime + rle.getRetryAfter();
+                                            }
+                                        }
+                                    );
                             }
                         } catch (Exception e) {
                             // Silently ignore permission errors
@@ -873,32 +855,48 @@ public class DiscordBot extends ListenerAdapter {
     private static void sendBackupStartMessage() {
         broadcastToChannels(channel -> {
             EmbedBuilder embed = new EmbedBuilder()
-                .setColor(new Color(255, 165, 0)) // Orange color
-                .setTitle("🔄 Backup Started")
-                .setDescription("Server backup process has started. You might experience slight lag.")
-                .setTimestamp(Instant.now())
-                .setFooter("Backup System", null);
+                    .setColor(new Color(255, 165, 0))
+                    .setTitle("🔄 Backup Started")
+                    .setDescription("Server backup process has started. You might experience slight lag.")
+                    .setTimestamp(Instant.now())
+                    .setFooter("Backup System", null);
 
-            channel.sendMessageEmbeds(embed.build()).queue();
+            channel.sendMessageEmbeds(embed.build())
+                    .setSuppressedNotifications(true)
+                    .queue(message -> {
+                        // Delete message after 1 minute
+                        message.delete().queueAfter(1, TimeUnit.MINUTES, 
+                            success -> {}, 
+                            error -> {}  // Ignore deletion errors
+                        );
+                    });
         });
     }
 
     private static void sendBackupCompleteMessage() {
         broadcastToChannels(channel -> {
             String details = backupMessageBuffer.toString()
-                .replaceAll("(?m)^Creating zip file.*$", "") // Remove zip creation messages
-                .replaceAll("(?m)^Uploading.*$", "")        // Remove upload progress messages
-                .trim();
+                    .replaceAll("(?m)^Creating zip file.*$", "")
+                    .replaceAll("(?m)^Uploading.*$", "")
+                    .trim();
 
             EmbedBuilder embed = new EmbedBuilder()
-                .setColor(new Color(0, 255, 0)) // Green color
-                .setTitle("✅ Backup Completed")
-                .setDescription("Server backup has completed successfully!")
-                .addField("Backup Details", "```" + details + "```", false)
-                .setTimestamp(Instant.now())
-                .setFooter("Backup System", null);
+                    .setColor(new Color(0, 255, 0))
+                    .setTitle("✅ Backup Completed")
+                    .setDescription("Server backup has completed successfully!")
+                    .addField("Backup Details", "```" + details + "```", false)
+                    .setTimestamp(Instant.now())
+                    .setFooter("Backup System", null);
 
-            channel.sendMessageEmbeds(embed.build()).queue();
+            channel.sendMessageEmbeds(embed.build())
+                    .setSuppressedNotifications(true)
+                    .queue(message -> {
+                        // Delete message after 1 minute
+                        message.delete().queueAfter(1, TimeUnit.MINUTES, 
+                            success -> {}, 
+                            error -> {}  // Ignore deletion errors
+                        );
+                    });
         });
     }
 
@@ -985,5 +983,22 @@ public class DiscordBot extends ListenerAdapter {
                 );
             }
         });
+    }
+
+    private void handleTicTacToe(SlashCommandInteractionEvent event) {
+        String difficulty = event.getOption("difficulty").getAsString().toLowerCase();
+        if (!Arrays.asList("easy", "medium", "hard").contains(difficulty)) {
+            event.reply("Please choose a valid difficulty: easy, medium, or hard").setEphemeral(true).queue();
+            return;
+        }
+
+        TicTacToe game = new TicTacToe(event.getUser(), difficulty);
+        activeGames.put(event.getUser().getId(), game);
+        
+        event.replyEmbeds(game.getGameBoard("Your turn!").build())
+            .addActionRow(game.getButtons().subList(0, 3))
+            .addActionRow(game.getButtons().subList(3, 6))
+            .addActionRow(game.getButtons().subList(6, 9))
+            .queue();
     }
 }

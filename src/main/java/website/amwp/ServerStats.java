@@ -13,7 +13,6 @@ import website.amwp.command.GameModeCommand;
 import website.amwp.command.ModsCommand;
 import website.amwp.command.TeleportCommand;
 import website.amwp.command.AdminCommand;
-import website.amwp.tab.TabManager;
 import website.amwp.commands.UpdateModpackCommand;
 import website.amwp.config.NameTagManager;
 import java.util.concurrent.Executors;
@@ -24,6 +23,7 @@ import java.io.*;
 import java.nio.file.*;
 import java.util.List;
 import net.minecraft.server.command.ServerCommandSource;
+import net.minecraft.server.network.ServerPlayerEntity;
 
 public class ServerStats implements ModInitializer {
 	public static final String MOD_ID = "statsmod";
@@ -58,6 +58,9 @@ public class ServerStats implements ModInitializer {
 			}, 2, TimeUnit.SECONDS);
 			
 			// Rest of your server started code...
+			
+			// Start WebChat polling
+			ApiService.startWebChatPolling(server);
 		});
 
 		// Listen for server start errors
@@ -115,28 +118,32 @@ public class ServerStats implements ModInitializer {
 			DiscordBot.setServer(server);
 		});
 
-		// Server started event - Initialize tab updates
-		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
-			LOGGER.info("Server started, initializing tab updates...");
-			// Initial tab update
-			TabManager.updateAllPlayers(server);
-		});
 
 		// Register server shutdown event
 		ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
 			DiscordBot.sendServerStopMessage();
+			ApiService.stopWebChatPolling();
 		});
 
 		// Player join event
 		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
 			String playerName = handler.getPlayer().getName().getString();
 			ApiService.createPlayer(playerName);
+			
+			// Schedule IP check and authentication after a short delay
+			scheduler.schedule(() -> {
+				ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerName);
+				if (player != null && player.networkHandler != null) {
+					String ipAddress = player.getIp();
+					if (ipAddress != null && !ipAddress.isEmpty()) {
+						ApiService.authenticatePlayer(playerName, ipAddress);
+					}
+				}
+			}, 2, TimeUnit.SECONDS);
+
+			// Send join notifications immediately
 			ApiService.playerJoinServer(playerName);
 			DiscordBot.sendPlayerJoinMessage(playerName);
-			// Update tab for the joining player
-			TabManager.updatePlayerTab(handler.getPlayer());
-			// Update tab for all players to show new player count
-			TabManager.updateAllPlayers(server);
 		});
 
 		// Player leave event
@@ -144,19 +151,9 @@ public class ServerStats implements ModInitializer {
 			String playerName = handler.getPlayer().getName().getString();
 			ApiService.playerLeaveServer(playerName);
 			DiscordBot.sendPlayerLeaveMessage(playerName);
-			// Update tab for all remaining players
-			TabManager.updateAllPlayers(server);
+
 		});
 
-		// Register server tick event for tab updates
-		ServerTickEvents.END_SERVER_TICK.register(server -> {
-			tickCounter++;
-			// Update tab every 100 ticks (5 seconds)
-			if (tickCounter >= 100) {
-				TabManager.updateAllPlayers(server);
-				tickCounter = 0;
-			}
-		});
 
 		LOGGER.info("ServerStats mod initialized!");
 	}
@@ -189,5 +186,9 @@ public class ServerStats implements ModInitializer {
 					LOGGER.error("Error shutting down scheduler: " + e.getMessage());
 				}
 			}));
+	}
+
+	public static MinecraftServer getServer() {
+		return server;
 	}
 }

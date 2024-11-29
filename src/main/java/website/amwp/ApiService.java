@@ -4,12 +4,26 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.network.ServerPlayNetworkHandler;
+import java.net.SocketAddress;
 
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.concurrent.CompletableFuture;
+
+
+
+import net.minecraft.network.ClientConnection;
+
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import net.minecraft.text.Text;
 
 public class ApiService {
     private static final String BASE_URL = "https://stats-mod-backend.vercel.app/api";
@@ -19,10 +33,16 @@ public class ApiService {
     private static final String ONLINE_LIST_URL = BASE_URL + "/player-online";
     private static final String CHAT_URL = BASE_URL + "/chat";
     private static final String MODPACK_URL = BASE_URL + "/modpack";
+    private static final String CHAT_AUTH_URL = BASE_URL + "/chat-auth/authenticate";
+    private static final String CHAT_AUTH_CHECK_URL = BASE_URL + "/chat-auth/user/";
+    private static final String CHAT_AUTH_UPDATE_URL = BASE_URL + "/chat-auth/";
+    private static final String WEBCHAT_URL = BASE_URL + "/webchat";
     
     private static final HttpClient client = HttpClient.newHttpClient();
     private static final Gson gson = new Gson();
     private static final String API_TOKEN = "kizu_mc_stats_9a8b7c6d5e4f3g2h1i";
+    private static long lastMessageId = 0;
+    private static final ScheduledExecutorService webChatPoller = Executors.newSingleThreadScheduledExecutor();
 
     private static boolean playerExists(String playerName, String playersJson) {
         try {
@@ -112,6 +132,7 @@ public class ApiService {
 
     public static void playerJoinServer(String playerName) {
         try {
+            // Only send the join notification
             JsonObject requestBody = new JsonObject();
             requestBody.addProperty("player_name", playerName);
 
@@ -140,8 +161,10 @@ public class ApiService {
                         ServerStats.LOGGER.error("✗ Error registering player join: " + playerName, e);
                         return null;
                     });
+
         } catch (Exception e) {
             ServerStats.LOGGER.error("✗ Failed to create join request for: " + playerName, e);
+            e.printStackTrace();
         }
     }
 
@@ -289,7 +312,193 @@ public class ApiService {
                         return null;
                     });
         } catch (Exception e) {
-            ServerStats.LOGGER.error("✗ Failed to create modpack update request:", e);
+            ServerStats.LOGGER.error(" Failed to create modpack update request:", e);
+        }
+    }
+
+    public static void authenticatePlayer(String playerName, String ipAddress) {
+        try {
+            // First check if user exists
+            HttpRequest checkRequest = HttpRequest.newBuilder()
+                    .uri(URI.create(CHAT_AUTH_CHECK_URL + playerName))
+                    .header("x-api-token", API_TOKEN)
+                    .GET()
+                    .build();
+
+            client.sendAsync(checkRequest, HttpResponse.BodyHandlers.ofString())
+                    .thenAccept(checkResponse -> {
+                        if (checkResponse.statusCode() == 404) {
+                            createNewAuthentication(playerName, ipAddress);
+                        } else if (checkResponse.statusCode() == 200) {
+                            updateUserIp(playerName, ipAddress);
+                        } else {
+                            ServerStats.LOGGER.error("Unexpected auth check response: " + checkResponse.statusCode());
+                        }
+                    })
+                    .exceptionally(e -> {
+                        ServerStats.LOGGER.error("Error during auth check: " + e.getMessage());
+                        return null;
+                    });
+        } catch (Exception e) {
+            ServerStats.LOGGER.error("Failed to create auth check request: " + e.getMessage());
+        }
+    }
+
+    private static void createNewAuthentication(String playerName, String ipAddress) {
+        try {
+            JsonObject requestBody = new JsonObject();
+            requestBody.addProperty("username", playerName);
+            requestBody.addProperty("ip_address", ipAddress);
+            requestBody.addProperty("allow_proxy", true);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(CHAT_AUTH_URL))
+                    .header("Content-Type", "application/json")
+                    .header("x-api-token", API_TOKEN)
+                    .header("X-Forwarded-For", ipAddress)
+                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
+                    .build();
+
+            client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                    .thenAccept(response -> {
+                        if (response.statusCode() == 200 || response.statusCode() == 201) {
+                            ServerStats.LOGGER.info("✓ Successfully authenticated: " + playerName);
+                        } else if (response.statusCode() == 403) {
+                            try {
+                                JsonObject errorResponse = gson.fromJson(response.body(), JsonObject.class);
+                                String clientIp = errorResponse.get("client_ip").getAsString();
+                                createNewAuthenticationWithIp(playerName, clientIp);
+                            } catch (Exception e) {
+                                ServerStats.LOGGER.error("Failed to parse error response: " + e.getMessage());
+                            }
+                        } else {
+                            ServerStats.LOGGER.error("Failed to authenticate: " + playerName + " (Status: " + response.statusCode() + ")");
+                        }
+                    })
+                    .exceptionally(e -> {
+                        ServerStats.LOGGER.error("Error during authentication: " + e.getMessage());
+                        return null;
+                    });
+        } catch (Exception e) {
+            ServerStats.LOGGER.error("Failed to create auth request: " + e.getMessage());
+        }
+    }
+
+    private static void createNewAuthenticationWithIp(String playerName, String clientIp) {
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("username", playerName);
+        requestBody.addProperty("ip_address", clientIp);
+        requestBody.addProperty("allow_proxy", true);
+
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(CHAT_AUTH_URL))
+                    .header("Content-Type", "application/json")
+                    .header("x-api-token", API_TOKEN)
+                    .header("X-Forwarded-For", clientIp)
+                    .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
+                    .build();
+
+            client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                    .thenAccept(response -> {
+                        if (response.statusCode() == 200 || response.statusCode() == 201) {
+                            ServerStats.LOGGER.info("✓ Successfully authenticated with proxy IP: " + playerName);
+                        } else {
+                            ServerStats.LOGGER.error("Failed to authenticate with proxy IP: " + playerName);
+                        }
+                    });
+        } catch (Exception e) {
+            ServerStats.LOGGER.error("Failed to retry authentication: " + e.getMessage());
+        }
+    }
+
+    private static void updateUserIp(String playerName, String ipAddress) {
+        try {
+            JsonObject requestBody = new JsonObject();
+            requestBody.addProperty("ip_address", ipAddress);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(CHAT_AUTH_UPDATE_URL + playerName))
+                    .header("Content-Type", "application/json")
+                    .header("x-api-token", API_TOKEN)
+                    .PUT(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
+                    .build();
+
+            client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                    .thenAccept(response -> {
+                        if (response.statusCode() == 200) {
+                            ServerStats.LOGGER.info("✓ Successfully updated player IP:");
+                            ServerStats.LOGGER.info("  - Player: " + playerName);
+                            ServerStats.LOGGER.info("  - New IP: " + ipAddress);
+                        } else {
+                            ServerStats.LOGGER.error("✗ Failed to update player IP:");
+                            ServerStats.LOGGER.error("  - Player: " + playerName);
+                            ServerStats.LOGGER.error("  - Status: " + response.statusCode());
+                        }
+                    })
+                    .exceptionally(e -> {
+                        ServerStats.LOGGER.error("Error updating IP: " + e.getMessage());
+                        return null;
+                    });
+        } catch (Exception e) {
+            ServerStats.LOGGER.error("Failed to create IP update request: " + e.getMessage());
+        }
+    }
+
+    public static void startWebChatPolling(MinecraftServer server) {
+        webChatPoller.scheduleAtFixedRate(() -> {
+            try {
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(WEBCHAT_URL))
+                        .header("x-api-token", API_TOKEN)
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                
+                if (response.statusCode() == 200) {
+                    JsonObject jsonResponse = gson.fromJson(response.body(), JsonObject.class);
+                    JsonArray messages = jsonResponse.getAsJsonArray("messages");
+
+                    // Process messages in reverse order (oldest first)
+                    for (int i = messages.size() - 1; i >= 0; i--) {
+                        JsonObject message = messages.get(i).getAsJsonObject();
+                        long messageId = message.get("id").getAsLong();
+                        
+                        // Only process new messages
+                        if (messageId > lastMessageId) {
+                            String playerName = message.get("player_name").getAsString();
+                            String messageText = message.get("message").getAsString();
+                            String type = message.get("type").getAsString();
+
+                            if (type.equals("chat")) {
+                                // Send message to all players
+                                server.execute(() -> {
+                                    Text chatMessage = Text.of("§b[WebChat] §r" + playerName + ": " + messageText);
+                                    server.getPlayerManager().broadcast(chatMessage, false);
+                                });
+                                
+                                // Update last message ID
+                                lastMessageId = messageId;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                // Silent error handling to avoid spam
+                if (!(e instanceof InterruptedException)) {
+                    ServerStats.LOGGER.debug("WebChat poll error: " + e.getMessage());
+                }
+            }
+        }, 0, 2, TimeUnit.SECONDS); // Poll every 2 seconds
+    }
+
+    public static void stopWebChatPolling() {
+        webChatPoller.shutdown();
+        try {
+            webChatPoller.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            ServerStats.LOGGER.error("Error shutting down WebChat poller: " + e.getMessage());
         }
     }
 } 

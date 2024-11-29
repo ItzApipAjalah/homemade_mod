@@ -5,7 +5,6 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.text.Text;
 import website.amwp.config.ModConfig;
-import website.amwp.tab.TabManager;
 
 import java.util.Arrays;
 import java.util.List;
@@ -56,35 +55,5 @@ public class AdminCommand {
                 }
                 return 1;
             }));
-
-        // Tab header command
-        dispatcher.register(literal("settabheader")
-            .requires(source -> source.hasPermissionLevel(4))
-            .then(argument("header", StringArgumentType.greedyString())
-                .executes(context -> {
-                    String headerInput = StringArgumentType.getString(context, "header");
-                    List<String> headerLines = Arrays.asList(headerInput.split("\\\\n"));
-                    
-                    ModConfig.getInstance().setTabHeader(headerLines);
-                    TabManager.updateAllPlayers(context.getSource().getServer());
-                    
-                    context.getSource().sendMessage(Text.literal("§aTab header updated!"));
-                    return 1;
-                })));
-
-        // Tab footer command
-        dispatcher.register(literal("settabfooter")
-            .requires(source -> source.hasPermissionLevel(4))
-            .then(argument("footer", StringArgumentType.greedyString())
-                .executes(context -> {
-                    String footerInput = StringArgumentType.getString(context, "footer");
-                    List<String> footerLines = Arrays.asList(footerInput.split("\\\\n"));
-                    
-                    ModConfig.getInstance().setTabFooter(footerLines);
-                    TabManager.updateAllPlayers(context.getSource().getServer());
-                    
-                    context.getSource().sendMessage(Text.literal("§aTab footer updated!"));
-                    return 1;
-                })));
     }
 } 

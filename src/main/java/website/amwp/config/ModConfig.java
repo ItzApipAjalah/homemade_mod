@@ -16,19 +16,6 @@ public class ModConfig {
     private String discordToken = "your-token-here";
     private List<String> discordChannelIds = Arrays.asList("your-channel-id-here");
     private List<String> serverMotd = Arrays.asList("&6Welcome to Minecraft Server", "&eSecond line of MOTD");
-    private List<String> tabHeader = Arrays.asList(
-        "&6&lPlayer Statistics",
-        "&fName: &e%player_name%",
-        "&fPing: &e%player_ping%ms",
-        "&fPlaytime: &e%playtime%"
-    );
-    private List<String> tabFooter = Arrays.asList(
-        "&6&lServer Information",
-        "&fTPS: &e%tps%",
-        "&fUptime: &e%uptime%",
-        "&fOnline: &e%online%&7/&e%max_players%",
-        "&fServer IP: &eplay.example.com"
-    );
     
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final File CONFIG_FILE = new File("config/server-stats.json");
@@ -119,24 +106,6 @@ public class ModConfig {
 
     public void setServerMotd(List<String> motd) {
         this.serverMotd = motd;
-        saveConfig();
-    }
-
-    public String getFormattedTabHeader() {
-        return String.join("\n", tabHeader).replace("&", "§");
-    }
-
-    public String getFormattedTabFooter() {
-        return String.join("\n", tabFooter).replace("&", "§");
-    }
-
-    public void setTabHeader(List<String> header) {
-        this.tabHeader = header;
-        saveConfig();
-    }
-
-    public void setTabFooter(List<String> footer) {
-        this.tabFooter = footer;
         saveConfig();
     }
 } 
